@@ -14,6 +14,10 @@ class ConversationStorageService {
     private func conversationsKey(for userId: UUID) -> String {
         return "saved_conversations_\(userId.uuidString)"
     }
+
+    private func pinnedKey(for userId: UUID) -> String {
+        return "pinned_conversations_\(userId.uuidString)"
+    }
     
     private init() {}
     
@@ -110,8 +114,11 @@ class ConversationStorageService {
             }
         }
         
-        print("✅ Loaded \(conversations.count) conversations")
-        return conversations
+        let pinnedIds = loadPinnedConversationIds(userId: userId)
+        let sorted = sortConversations(conversations, pinnedIds: pinnedIds)
+        
+        print("✅ Loaded \(sorted.count) conversations")
+        return sorted
     }
     
     // MARK: - Add or Update Conversation (Associated with User)
@@ -127,8 +134,8 @@ class ConversationStorageService {
             conversations.insert(conversation, at: 0) // Add to the front
         }
         
-        // Sort by time (newest first)
-        conversations.sort { $0.lastMessageTime > $1.lastMessageTime }
+        let pinnedIds = loadPinnedConversationIds(userId: userId)
+        conversations = sortConversations(conversations, pinnedIds: pinnedIds)
         
         saveConversations(conversations, userId: userId)
     }
@@ -151,8 +158,54 @@ class ConversationStorageService {
                 type: oldConversation.type
             )
             conversations[index] = updatedConversation
-            conversations.sort { $0.lastMessageTime > $1.lastMessageTime }
+            let pinnedIds = loadPinnedConversationIds(userId: userId)
+            conversations = sortConversations(conversations, pinnedIds: pinnedIds)
             saveConversations(conversations, userId: userId)
+        }
+    }
+
+    // MARK: - Pinned Conversations
+    func loadPinnedConversationIds(userId: UUID) -> Set<UUID> {
+        guard let data = UserDefaults.standard.data(forKey: pinnedKey(for: userId)),
+              let ids = try? JSONDecoder().decode([UUID].self, from: data) else {
+            return []
+        }
+        return Set(ids)
+    }
+    
+    func isPinned(conversationId: UUID, userId: UUID) -> Bool {
+        loadPinnedConversationIds(userId: userId).contains(conversationId)
+    }
+    
+    func setPinned(conversationId: UUID, pinned: Bool, userId: UUID) {
+        var ids = loadPinnedConversationIds(userId: userId)
+        if pinned {
+            ids.insert(conversationId)
+        } else {
+            ids.remove(conversationId)
+        }
+        let stored = Array(ids)
+        if let encoded = try? JSONEncoder().encode(stored) {
+            UserDefaults.standard.set(encoded, forKey: pinnedKey(for: userId))
+        }
+    }
+    
+    // MARK: - Delete Conversation
+    func deleteConversation(conversationId: UUID, userId: UUID) {
+        var conversations = loadConversations(userId: userId)
+        conversations.removeAll { $0.id == conversationId }
+        saveConversations(conversations, userId: userId)
+        setPinned(conversationId: conversationId, pinned: false, userId: userId)
+    }
+    
+    private func sortConversations(_ conversations: [Conversation], pinnedIds: Set<UUID>) -> [Conversation] {
+        conversations.sorted { lhs, rhs in
+            let lhsPinned = pinnedIds.contains(lhs.id)
+            let rhsPinned = pinnedIds.contains(rhs.id)
+            if lhsPinned != rhsPinned {
+                return lhsPinned && !rhsPinned
+            }
+            return lhs.lastMessageTime > rhs.lastMessageTime
         }
     }
 }

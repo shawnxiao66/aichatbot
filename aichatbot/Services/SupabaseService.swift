@@ -315,6 +315,71 @@ class SupabaseService {
         }
     }
     
+    // MARK: - Update Private Character
+    func updatePrivateCharacter(character: PrivateCharacter, userId: UUID, completion: @escaping (Result<PrivateCharacter, Error>) -> Void) {
+        Task {
+            do {
+                let characterToUpdate = PrivateCharacter(
+                    id: character.id,
+                    userId: userId,
+                    name: character.name,
+                    avatar: character.avatar,
+                    description: character.description,
+                    gender: character.gender,
+                    backgroundImage: character.backgroundImage,
+                    chatDescription: character.chatDescription,
+                    greetingMessage: character.greetingMessage,
+                    gallery: character.gallery
+                )
+                
+                let response: PrivateCharacter = try await supabase
+                    .from("private_characters")
+                    .update(characterToUpdate)
+                    .eq("id", value: character.id)
+                    .select()
+                    .single()
+                    .execute()
+                    .value
+                
+                print("✅ Successfully updated private character: \(response.name) (userId: \(userId))")
+                
+                await MainActor.run {
+                    completion(.success(response))
+                }
+            } catch {
+                print("❌ Failed to update private character: \(error)")
+                await MainActor.run {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+    
+    // MARK: - Delete Private Character
+    func deletePrivateCharacter(id: UUID, userId: UUID, completion: @escaping (Result<Void, Error>) -> Void) {
+        Task {
+            do {
+                try await supabase
+                    .from("private_characters")
+                    .delete()
+                    .eq("id", value: id)
+                    .eq("user_id", value: userId)
+                    .execute()
+                
+                print("✅ Successfully deleted private character: \(id) (userId: \(userId))")
+                
+                await MainActor.run {
+                    completion(.success(()))
+                }
+            } catch {
+                print("❌ Failed to delete private character: \(error)")
+                await MainActor.run {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+    
     // MARK: - Create User
     func createUser(user: User, completion: @escaping (Result<User, Error>) -> Void) {
         Task {
@@ -375,14 +440,14 @@ class SupabaseService {
                 let fileName = "\(UUID().uuidString).jpg"
                 
                 // Upload to Supabase Storage
-                // Note: Need to create a storage bucket named "characters" in Supabase Dashboard first and set it to public
+                // Note: Need to create a storage bucket named "characters_private" in Supabase Dashboard first and set it to public
                 try await supabase.storage
-                    .from("characters")
+                    .from("characters_private")
                     .upload(path: fileName, file: imageData, options: FileOptions(upsert: false))
                 
                 // Get public URL
                 let publicURL = try await supabase.storage
-                    .from("characters")
+                    .from("characters_private")
                     .getPublicURL(path: fileName)
                 
                 print("✅ Image uploaded successfully: \(publicURL)")
@@ -392,10 +457,8 @@ class SupabaseService {
                 }
             } catch {
                 print("❌ Failed to upload image: \(error)")
-                // If upload fails, return placeholder URL
                 await MainActor.run {
-                    let placeholderURL = "https://via.placeholder.com/120x160/8B5CF6/FFFFFF?text=Character"
-                    completion(.success(placeholderURL))
+                    completion(.failure(error))
                 }
             }
         }

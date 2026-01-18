@@ -10,16 +10,33 @@ import PhotosUI
 
 struct CreateCharacterView: View {
     @Environment(\.dismiss) var dismiss
-    @State private var name: String = ""
-    @State private var description: String = ""
+    @State private var name: String
+    @State private var description: String
     @State private var selectedImage: UIImage?
     @State private var selectedPhotoItem: PhotosPickerItem?
-    @State private var gender: String = "female" // "male" 或 "female"
+    @State private var gender: String // "male" 或 "female"
     @State private var isCreating: Bool = false
     @State private var showError: Bool = false
     @State private var errorMessage: String = ""
+    @State private var existingAvatarURL: String? = nil
     
-    var onCharacterCreated: (() -> Void)?
+    var editingCharacter: PrivateCharacter? = nil
+    var onCharacterCreated: ((PrivateCharacter) -> Void)?
+    var onCharacterUpdated: (() -> Void)?
+    
+    private var isEditing: Bool {
+        editingCharacter != nil
+    }
+    
+    init(editingCharacter: PrivateCharacter? = nil, onCharacterCreated: ((PrivateCharacter) -> Void)? = nil, onCharacterUpdated: (() -> Void)? = nil) {
+        self.editingCharacter = editingCharacter
+        self.onCharacterCreated = onCharacterCreated
+        self.onCharacterUpdated = onCharacterUpdated
+        _name = State(initialValue: editingCharacter?.name ?? "")
+        _description = State(initialValue: editingCharacter?.description ?? "")
+        _gender = State(initialValue: editingCharacter?.gender ?? "female")
+        _existingAvatarURL = State(initialValue: editingCharacter?.avatar)
+    }
     
     var body: some View {
         NavigationView {
@@ -42,6 +59,22 @@ struct CreateCharacterView: View {
                                         .aspectRatio(contentMode: .fill)
                                         .frame(width: 200, height: 300)
                                         .clipShape(RoundedRectangle(cornerRadius: 12))
+                                } else if let avatarURL = existingAvatarURL, !avatarURL.isEmpty {
+                                    CachedAsyncImage(urlString: avatarURL) { image in
+                                        image
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                            .frame(width: 200, height: 300)
+                                    } placeholder: {
+                                        Rectangle()
+                                            .fill(AppColors.cardBackground)
+                                            .frame(width: 200, height: 300)
+                                            .overlay(
+                                                ProgressView()
+                                                    .progressViewStyle(CircularProgressViewStyle(tint: AppColors.accentPrimary))
+                                            )
+                                    }
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
                                 } else {
                                     RoundedRectangle(cornerRadius: 12)
                                         .fill(AppColors.cardBackground)
@@ -169,14 +202,18 @@ struct CreateCharacterView: View {
                         
                         // 创建按钮
                         Button(action: {
-                            createCharacter()
+                            if !isEditing {
+                                createCharacter()
+                            } else {
+                                updateCharacter()
+                            }
                         }) {
                             HStack {
                                 if isCreating {
                                     ProgressView()
                                         .progressViewStyle(CircularProgressViewStyle(tint: AppColors.textPrimary))
                                 } else {
-                                    Text("Create Character")
+                                    Text(isEditing ? "Save Changes" : "Create Character")
                                         .font(.system(size: 16, weight: .semibold))
                                 }
                             }
@@ -211,7 +248,7 @@ struct CreateCharacterView: View {
                     .padding(.vertical, 20)
                 }
             }
-            .navigationTitle("Create Character")
+            .navigationTitle(isEditing ? "Edit Character" : "Create Character")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -254,9 +291,11 @@ struct CreateCharacterView: View {
                 case .success(let imageURL):
                     createCharacterWithAvatar(avatarURL: imageURL)
                 case .failure(let error):
-                    print("图片上传失败: \(error)")
-                    // 图片上传失败，不传 avatar
-                    createCharacterWithAvatar(avatarURL: "")
+                    DispatchQueue.main.async {
+                        isCreating = false
+                        errorMessage = "图片上传失败: \(error.localizedDescription)"
+                        showError = true
+                    }
                 }
             }
         } else {
@@ -288,11 +327,76 @@ struct CreateCharacterView: View {
                 isCreating = false
                 
                 switch result {
-                case .success:
-                    onCharacterCreated?()
+                case .success(let createdCharacter):
+                    onCharacterCreated?(createdCharacter)
                     dismiss()
                 case .failure(let error):
                     errorMessage = "创建角色失败: \(error.localizedDescription)"
+                    showError = true
+                }
+            }
+        }
+    }
+    
+    private func updateCharacter() {
+        guard let editingCharacter = editingCharacter else { return }
+        guard !name.isEmpty, !description.isEmpty else {
+            return
+        }
+        
+        isCreating = true
+        
+        if let image = selectedImage {
+            SupabaseService.shared.uploadImage(image: image) { result in
+                switch result {
+                case .success(let imageURL):
+                    updateCharacterWithAvatar(avatarURL: imageURL, editingCharacter: editingCharacter)
+                case .failure(let error):
+                    DispatchQueue.main.async {
+                        isCreating = false
+                        errorMessage = "Image upload failed: \(error.localizedDescription)"
+                        showError = true
+                    }
+                }
+            }
+        } else {
+            updateCharacterWithAvatar(avatarURL: existingAvatarURL ?? "", editingCharacter: editingCharacter)
+        }
+    }
+    
+    private func updateCharacterWithAvatar(avatarURL: String, editingCharacter: PrivateCharacter) {
+        guard let userId = AuthService.shared.currentUser?.id else {
+            DispatchQueue.main.async {
+                isCreating = false
+                errorMessage = "Please log in first"
+                showError = true
+            }
+            return
+        }
+        
+        let updatedCharacter = PrivateCharacter(
+            id: editingCharacter.id,
+            userId: userId,
+            name: name,
+            avatar: avatarURL.isEmpty ? nil : avatarURL,
+            description: description,
+            gender: gender,
+            backgroundImage: editingCharacter.backgroundImage,
+            chatDescription: editingCharacter.chatDescription,
+            greetingMessage: editingCharacter.greetingMessage,
+            gallery: editingCharacter.gallery
+        )
+        
+        SupabaseService.shared.updatePrivateCharacter(character: updatedCharacter, userId: userId) { result in
+            DispatchQueue.main.async {
+                isCreating = false
+                
+                switch result {
+                case .success:
+                    onCharacterUpdated?()
+                    dismiss()
+                case .failure(let error):
+                    errorMessage = "Update failed: \(error.localizedDescription)"
                     showError = true
                 }
             }

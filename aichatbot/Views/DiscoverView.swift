@@ -80,12 +80,36 @@ struct DiscoverView: View {
             }
         }
         .sheet(isPresented: $showCreateCharacter) {
-            CreateCharacterView {
-                // 如果当前在"私人"标签，刷新数据
-                if selectedTab == .privateTab {
-                    loadData()
+            CreateCharacterView(onCharacterCreated: { createdCharacter in
+                // 创建成功后清除缓存并刷新 private 角色数据
+                // 无论当前在哪个标签，都需要刷新，以便用户切换到 private 标签时能看到新角色
+                if let userId = AuthService.shared.currentUser?.id {
+                    // 清除缓存，确保获取最新数据
+                    CacheService.shared.clearPrivateCharactersCache(for: userId)
+                    // 强制刷新数据
+                    SupabaseService.shared.fetchPrivateCharacters(userId: userId) { result in
+                        DispatchQueue.main.async {
+                            switch result {
+                            case .success(let fetchedCharacters):
+                                self.privateCharacters = fetchedCharacters
+                                self.allPrivateCharacters = fetchedCharacters
+                                // 如果当前在 private 标签，应用搜索过滤
+                                if self.selectedTab == .privateTab {
+                                    self.applySearch(self.searchText)
+                                }
+                            case .failure(let error):
+                                print("加载私人角色失败: \(error)")
+                            }
+                        }
+                    }
                 }
-            }
+                // 创建成功后直接进入聊天，并切到 Private 标签
+                selectedTab = .privateTab
+                let conversation = Conversation.from(character: createdCharacter)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    selectedConversation = conversation
+                }
+            })
         }
         .fullScreenCover(item: $selectedConversation) { conversation in
             let _ = print("📱 fullScreenCover 显示，对话: \(conversation.name)")
@@ -93,18 +117,20 @@ struct DiscoverView: View {
         }
         .sheet(item: $selectedProfile) { profileType in
             NavigationView {
-                CharacterProfileView(profileType: profileType) {
-                    // 开始聊天回调
-                    switch profileType {
-                    case .character(let char):
-                        selectedConversation = Conversation.from(character: char)
-                    case .story(let story):
-                        selectedConversation = Conversation.from(story: story)
-                    case .privateCharacter(let char):
-                        selectedConversation = Conversation.from(character: char)
+                CharacterProfileView(
+                    profileType: profileType,
+                    onStartChat: {
+                        startChat(from: profileType)
+                    },
+                    onEdit: {
+                        loadData(forceRefresh: true)
+                    },
+                    onDelete: {
+                        loadData(forceRefresh: true)
                     }
-                }
+                )
             }
+            .presentationBackground(.clear)
         }
     }
     
@@ -116,7 +142,7 @@ struct DiscoverView: View {
                     .foregroundColor(AppColors.textMuted)
                 
                 TextField(
-                    selectedTab == .story ? "Search stories/theater" : "Search characters/tags/group chats",
+                    "Search",
                     text: $searchText
                 )
                 .foregroundColor(AppColors.textPrimary)
@@ -193,44 +219,88 @@ struct DiscoverView: View {
     
     // MARK: - 内容视图
     private var contentView: some View {
+        TabView(selection: $selectedTab) {
+            featuredTabView
+                .tag(TabType.featured)
+            storyTabView
+                .tag(TabType.story)
+            privateTabView
+                .tag(TabType.privateTab)
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .background(AppColors.background)
+        .onChange(of: selectedTab) { _ in
+            loadData()
+        }
+    }
+    
+    private var featuredTabView: some View {
         Group {
-            if isLoading {
+            if isLoading && selectedTab == .featured {
                 ScrollView {
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: AppColors.accentPrimary))
                         .padding(.top, 50)
                 }
             } else {
-                switch selectedTab {
-                case .featured, .privateTab:
-                    ScrollView {
-                        LazyVStack(spacing: 16) {
-                            characterListView
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 20)
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        characterListView
                     }
-                case .story:
-                    if stories.isEmpty {
-                        // 空状态
-                        ScrollView {
-                            VStack(spacing: 16) {
-                                Image(systemName: "book.fill")
-                                    .font(.system(size: 50))
-                                    .foregroundColor(AppColors.textMuted)
-                                Text("No stories available")
-                                    .font(.system(size: 16))
-                                    .foregroundColor(AppColors.textMuted)
-                            }
-                            .padding(.top, 100)
-                        }
-                    } else {
-                        ScrollView {
-                            storyGridView
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 16)
-                        }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 20)
+                }
+            }
+        }
+        .background(AppColors.background)
+    }
+    
+    private var privateTabView: some View {
+        Group {
+            if isLoading && selectedTab == .privateTab {
+                ScrollView {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: AppColors.accentPrimary))
+                        .padding(.top, 50)
+                }
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        characterListView
                     }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 20)
+                }
+            }
+        }
+        .background(AppColors.background)
+    }
+    
+    private var storyTabView: some View {
+        Group {
+            if isLoading && selectedTab == .story {
+                ScrollView {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: AppColors.accentPrimary))
+                        .padding(.top, 50)
+                }
+            } else if stories.isEmpty {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        Image(systemName: "book.fill")
+                            .font(.system(size: 50))
+                            .foregroundColor(AppColors.textMuted)
+                        Text("No stories available")
+                            .font(.system(size: 16))
+                            .foregroundColor(AppColors.textMuted)
+                    }
+                    .padding(.top, 100)
+                }
+            } else {
+                ScrollView {
+                    storyGridView
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 16)
                 }
             }
         }
@@ -408,6 +478,28 @@ struct DiscoverView: View {
                     self.isLoading = false
                 }
             }
+        }
+    }
+    
+    private func startChat(from profileType: CharacterProfileView.ProfileType) {
+        // 关闭资料页后再进入聊天，避免返回时回到资料页
+        selectedProfile = nil
+        
+        let conversation: Conversation
+        switch profileType {
+        case .character(let char):
+            selectedTab = .featured
+            conversation = Conversation.from(character: char)
+        case .story(let story):
+            selectedTab = .story
+            conversation = Conversation.from(story: story)
+        case .privateCharacter(let char):
+            selectedTab = .privateTab
+            conversation = Conversation.from(character: char)
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            selectedConversation = conversation
         }
     }
     

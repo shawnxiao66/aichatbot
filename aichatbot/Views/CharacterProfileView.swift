@@ -14,6 +14,11 @@ struct CharacterProfileView: View {
     @State private var unlockedGallery: Set<String> = []
     @State private var showUnlockAlert: Bool = false
     @State private var unlockAlertMessage: String = ""
+    @State private var showManageActions: Bool = false
+    @State private var showEditCharacter: Bool = false
+    @State private var showDeleteConfirm: Bool = false
+    @State private var actionErrorMessage: String = ""
+    @State private var showActionError: Bool = false
     private let perImageCost = 50
     
     // 支持三种类型的角色
@@ -33,6 +38,8 @@ struct CharacterProfileView: View {
     
     let profileType: ProfileType
     var onStartChat: (() -> Void)? = nil
+    var onEdit: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
     
     // 计算属性：获取统一的角色信息
     private var name: String {
@@ -83,6 +90,13 @@ struct CharacterProfileView: View {
         }
     }
 
+    private var canManageProfile: Bool {
+        if case .privateCharacter = profileType {
+            return true
+        }
+        return false
+    }
+
     private var galleryUnlockKey: String {
         let profileId = profileType.id.uuidString
         let userId = authService.currentUser?.id.uuidString ?? "guest"
@@ -97,6 +111,8 @@ struct CharacterProfileView: View {
     
     var body: some View {
         ZStack(alignment: .bottom) {
+            AppColors.background
+                .ignoresSafeArea()
             // 内容区域 - ScrollView
             ScrollView {
                 VStack(spacing: 0) {
@@ -243,11 +259,13 @@ struct CharacterProfileView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppColors.background)
         .onAppear {
             loadUnlockedGallery()
         }
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
                 Button(action: {
@@ -261,6 +279,61 @@ struct CharacterProfileView: View {
                         .clipShape(Circle())
                 }
             }
+            if canManageProfile {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: {
+                        showManageActions = true
+                    }) {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(AppColors.textPrimary)
+                            .frame(width: 44, height: 44)
+                            .background(AppColors.background.opacity(0.7))
+                            .clipShape(Circle())
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showManageActions) {
+            ManageActionsSheet(
+                onEdit: {
+                    showManageActions = false
+                    showEditCharacter = true
+                },
+                onDelete: {
+                    showManageActions = false
+                    showDeleteConfirm = true
+                }
+            )
+            .presentationDetents([.height(220)])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(.clear)
+        }
+        .sheet(isPresented: $showEditCharacter) {
+            if case .privateCharacter(let character) = profileType {
+                CreateCharacterView(editingCharacter: character, onCharacterUpdated: {
+                    onEdit?()
+                    dismiss()
+                })
+            }
+        }
+        .sheet(isPresented: $showDeleteConfirm) {
+            DeleteConfirmSheet(
+                onDelete: {
+                    performDelete()
+                },
+                onCancel: {
+                    showDeleteConfirm = false
+                }
+            )
+            .presentationDetents([.height(230)])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(.clear)
+        }
+        .alert("Error", isPresented: $showActionError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(actionErrorMessage)
         }
         .alert("Unable to unlock", isPresented: $showUnlockAlert) {
             Button("OK", role: .cancel) { }
@@ -295,6 +368,176 @@ struct CharacterProfileView: View {
             unlockAlertMessage = "Unlocking this image costs \(perImageCost) diamonds."
             showUnlockAlert = true
         }
+    }
+    
+    private func performDelete() {
+        guard case .privateCharacter(let character) = profileType else {
+            showDeleteConfirm = false
+            return
+        }
+        guard let userId = authService.currentUser?.id else {
+            showDeleteConfirm = false
+            actionErrorMessage = "Please log in first."
+            showActionError = true
+            return
+        }
+        
+        SupabaseService.shared.deletePrivateCharacter(id: character.id, userId: userId) { result in
+            DispatchQueue.main.async {
+                showDeleteConfirm = false
+                switch result {
+                case .success:
+                    CacheService.shared.clearPrivateCharactersCache(for: userId)
+                    onDelete?()
+                    dismiss()
+                case .failure(let error):
+                    actionErrorMessage = "Delete failed: \(error.localizedDescription)"
+                    showActionError = true
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 角色管理操作弹窗
+struct ManageActionsSheet: View {
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+    
+    var body: some View {
+        ZStack {
+            AppColors.background
+                .ignoresSafeArea()
+            
+            VStack(spacing: 12) {
+                VStack(spacing: 0) {
+                    Button(action: onEdit) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("Edit")
+                                .font(.system(size: 17, weight: .semibold))
+                            Spacer()
+                        }
+                        .foregroundColor(AppColors.textPrimary)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                    }
+                    
+                    Divider()
+                        .background(AppColors.textMuted.opacity(0.3))
+                        .padding(.horizontal, 16)
+                    
+                    Button(action: onDelete) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("Delete")
+                                .font(.system(size: 17, weight: .semibold))
+                            Spacer()
+                        }
+                        .foregroundColor(Color.red)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                    }
+                }
+                .background(
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            AppColors.cardBackground.opacity(0.95),
+                            AppColors.cardBackground.opacity(0.85)
+                        ]),
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .cornerRadius(18)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(AppColors.textMuted.opacity(0.08), lineWidth: 1)
+                )
+                
+                Button(role: .cancel, action: {}) {
+                Text("Cancel")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(AppColors.textPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    AppColors.accentPrimary.opacity(0.35),
+                                    AppColors.accentSecondary.opacity(0.35)
+                                ]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .cornerRadius(18)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 22)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - 删除确认弹窗
+struct DeleteConfirmSheet: View {
+    let onDelete: () -> Void
+    let onCancel: () -> Void
+    
+    var body: some View {
+        ZStack {
+            AppColors.background
+                .ignoresSafeArea()
+            
+            VStack(spacing: 12) {
+                VStack(spacing: 6) {
+                    Text("Delete character?")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(AppColors.textPrimary)
+                    Text("This action can't be undone.")
+                        .font(.system(size: 14))
+                        .foregroundColor(AppColors.textSecondary)
+                }
+                .padding(.top, 8)
+                
+                Button(action: onDelete) {
+                    Text("Delete")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(Color.red)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(AppColors.cardBackground)
+                        .cornerRadius(16)
+                }
+                
+                Button(action: onCancel) {
+                    Text("Cancel")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(AppColors.textPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            LinearGradient(
+                                gradient: Gradient(colors: [
+                                    AppColors.accentPrimary.opacity(0.35),
+                                    AppColors.accentSecondary.opacity(0.35)
+                                ]),
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .cornerRadius(16)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 22)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

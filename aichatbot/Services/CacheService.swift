@@ -77,4 +77,9 @@ class CacheService {
         charactersCache.removeValue(forKey: category)
         cacheTimestamps.removeValue(forKey: "characters_\(category)")
     }
+    
+    func clearPrivateCharactersCache(for userId: UUID) {
+        privateCharactersCache.removeValue(forKey: userId)
+        cacheTimestamps.removeValue(forKey: "private_\(userId.uuidString)")
+    }
 }

@@ -15,6 +15,7 @@ struct ChatView: View {
     @State private var conversations: [Conversation] = []
     @State private var isLoading: Bool = false
     @State private var selectedConversation: Conversation? = nil
+    @State private var pinnedConversationIds: Set<UUID> = []
     
     var body: some View {
         VStack(spacing: 0) {
@@ -55,6 +56,20 @@ struct ChatView: View {
                             .onTapGesture {
                                 selectedConversation = conversation
                             }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button {
+                                    togglePin(conversation)
+                                } label: {
+                                    Text(isPinned(conversation) ? "Unpin" : "Pin")
+                                }
+                                .tint(AppColors.accentPrimary)
+                                
+                                Button(role: .destructive) {
+                                    deleteConversation(conversation)
+                                } label: {
+                                    Text("Delete")
+                                }
+                            }
                             .listRowBackground(AppColors.background)
                     }
                 }
@@ -82,11 +97,40 @@ struct ChatView: View {
         isLoading = true
         // 立即加载，不需要延迟
         if let userId = authService.currentUser?.id {
+            pinnedConversationIds = ConversationStorageService.shared.loadPinnedConversationIds(userId: userId)
             conversations = ConversationStorageService.shared.loadConversations(userId: userId)
         } else {
             conversations = []
+            pinnedConversationIds = []
         }
         isLoading = false
+    }
+    
+    private func isPinned(_ conversation: Conversation) -> Bool {
+        pinnedConversationIds.contains(conversation.id)
+    }
+    
+    private func togglePin(_ conversation: Conversation) {
+        guard let userId = authService.currentUser?.id else { return }
+        let currentlyPinned = isPinned(conversation)
+        ConversationStorageService.shared.setPinned(
+            conversationId: conversation.id,
+            pinned: !currentlyPinned,
+            userId: userId
+        )
+        pinnedConversationIds = ConversationStorageService.shared.loadPinnedConversationIds(userId: userId)
+        conversations = ConversationStorageService.shared.loadConversations(userId: userId)
+    }
+    
+    private func deleteConversation(_ conversation: Conversation) {
+        guard let userId = authService.currentUser?.id else { return }
+        ConversationStorageService.shared.deleteConversation(conversationId: conversation.id, userId: userId)
+        MessageStorageService.shared.clearMessages(conversationId: conversation.id, userId: userId)
+        if selectedConversation?.id == conversation.id {
+            selectedConversation = nil
+        }
+        pinnedConversationIds = ConversationStorageService.shared.loadPinnedConversationIds(userId: userId)
+        conversations = ConversationStorageService.shared.loadConversations(userId: userId)
     }
 }
 
@@ -267,10 +311,19 @@ struct ChatDetailView: View {
         }
         .sheet(isPresented: $showProfile) {
             NavigationView {
-                CharacterProfileView(profileType: profileTypeFromConversation) {
+                CharacterProfileView(
+                    profileType: profileTypeFromConversation,
+                    onStartChat: {
                     // 开始聊天回调（已经在聊天界面，所以关闭资料卡即可）
                     showProfile = false
-                }
+                    },
+                    onEdit: {
+                        showProfile = false
+                    },
+                    onDelete: {
+                        showProfile = false
+                    }
+                )
 
                 if showReportMenu {
                     Color.black.opacity(0.001)
@@ -281,6 +334,7 @@ struct ChatDetailView: View {
                         .zIndex(9)
                 }
             }
+            .presentationBackground(.clear)
         }
         .sheet(isPresented: $showPaywall) {
             PaywallView()
